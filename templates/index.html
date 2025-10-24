@@ -94,7 +94,7 @@
 
         .main-content { padding: 20px 10px; }
 
-        nav, .upload-container, .results-header, .largest-transactions, footer {
+        nav, .upload-container, .results-header, footer { /* Removed largest-transactions */
             max-width: 1000px; margin: 20px auto; padding: 25px;
             background: var(--glass-bg); backdrop-filter: var(--glass-blur);
             border-radius: 12px; border: 1px solid var(--glass-border);
@@ -135,14 +135,13 @@
             border-radius: 8px; box-shadow: var(--light-shadow); transition: all 0.3s var(--smooth-curve);
             opacity: 0; animation: slideUp 0.6s var(--smooth-curve) forwards;
         }
-        /* Stagger graph animations */
-        .results .graph-row:nth-of-type(1) .graph-container:nth-child(1) { animation-delay: 0.3s; } /* Category Pie */
-        .results .graph-row:nth-of-type(1) .graph-container:nth-child(2) { animation-delay: 0.4s; } /* Total D/C Pie */
-        .results .graph-row:nth-of-type(2) .graph-container:nth-child(1) { animation-delay: 0.5s; } /* Trend */
-        .results .graph-row:nth-of-type(2) .graph-container:nth-child(2) { animation-delay: 0.6s; } /* Day of Week */
-        .results .graph-row:nth-of-type(3) .graph-container:nth-child(1) { animation-delay: 0.7s; } /* Monthly Bar */
-        .results .graph-row:nth-of-type(3) .graph-container:nth-child(2) { animation-delay: 0.8s; } /* Balance Line */
-        .results .graph-row:nth-of-type(4) .graph-container:nth-child(1) { animation-delay: 0.9s; } /* Top 10 */
+        .results .graph-row:nth-of-type(1) .graph-container:nth-child(1) { animation-delay: 0.2s; }
+        .results .graph-row:nth-of-type(1) .graph-container:nth-child(2) { animation-delay: 0.3s; }
+        .results .graph-row:nth-of-type(2) .graph-container:nth-child(1) { animation-delay: 0.4s; }
+        .results .graph-row:nth-of-type(2) .graph-container:nth-child(2) { animation-delay: 0.5s; }
+        .results .graph-row:nth-of-type(3) .graph-container:nth-child(1) { animation-delay: 0.6s; }
+        .results .graph-row:nth-of-type(3) .graph-container:nth-child(2) { animation-delay: 0.7s; }
+        .results .graph-row:nth-of-type(4) .graph-container:nth-child(1) { animation-delay: 0.8s; }
 
 
         .graph-container:hover { transform: translateY(-5px); box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3); }
@@ -165,26 +164,7 @@
         .icon { margin-right: 8px; font-size: 1.1em; vertical-align: middle; color: var(--text-secondary); }
         .upload-note .icon { color: var(--accent-color); }
 
-
-        .largest-transactions {
-            margin-top: 20px;
-            opacity: 0;
-            animation: slideUp 0.6s var(--smooth-curve) forwards;
-            animation-delay: 0.2s;
-         }
-        .txn-columns { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 30px; }
-        .txn-list { flex: 1 1 45%; min-width: 280px; text-align: left; }
-        .txn-list h4 { color: var(--text-color); font-size: 1.1em; font-weight: 600; margin-bottom: 15px; border-bottom: 1px solid var(--glass-border); padding-bottom: 8px; text-shadow: var(--text-shadow); }
-        .txn-list ul { list-style: none; padding: 0; margin: 0; }
-        .txn-list li { background: transparent; padding: 8px 0; border-bottom: 1px solid var(--glass-border); margin-bottom: 0; font-size: 0.9em; display: flex; justify-content: space-between; align-items: center; border-radius: 0; border-left: none; border-right: none; border-top: none; }
-        .txn-list li:last-child { border-bottom: none; }
-        .txn-details { flex-grow: 1; margin-right: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-        .txn-details strong { display: block; color: var(--text-color); font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-        .txn-details span { font-size: 0.85em; color: var(--text-secondary); }
-        .txn-amount { font-weight: 600; white-space: nowrap; font-size: 1em; }
-        .txn-amount.debit { color: #ff8a80; }
-        .txn-amount.credit { color: #b9f6ca; }
-
+        /* REMOVED largest-transactions styles */
 
         footer { margin-top: 40px; padding: 20px; text-align: center; font-size: 0.9em; color: var(--text-secondary); background-color: var(--glass-bg); backdrop-filter: var(--glass-blur); border-top: 1px solid var(--glass-border); box-shadow: none; border-radius: 0; animation: none; max-width: none; }
         footer h4 { color: var(--text-color); margin-top: 0; margin-bottom: 10px; font-size: 1.1em; font-weight: 600; }
@@ -205,7 +185,7 @@
             #welcome-screen h1 { font-size: 2.2em; }
             #welcome-screen .welcome-subtitle { font-size: 1em; }
             #welcome-gif { width: 150px; }
-            nav, .upload-container, .results-header, footer, .largest-transactions { padding: 15px; margin: 10px; border-radius: 8px; }
+            nav, .upload-container, .results-header, footer { padding: 15px; margin: 10px; border-radius: 8px; } /* Removed largest-transactions */
             .brand { font-size: 1.1em; }
             .nav-link { font-size: 0.8em; }
             h2 { font-size: 1.4em; }
@@ -215,8 +195,7 @@
             .download-buttons { flex-direction: column; align-items: center; gap: 10px; }
             #lightbox img { max-width: 95%; }
             .close-lightbox { top: 15px; right: 25px; font-size: 30px; }
-            .txn-columns { flex-direction: column; gap: 15px; }
-            .txn-list { min-width: 90%; }
+            /* REMOVED .txn-columns and .txn-list mobile styles */
             footer { margin-top: 30px; }
         }
 
@@ -310,49 +289,6 @@
                     </a>
                 </div>
             </div>
-
-            <div class="largest-transactions">
-                 <h2>Key Transactions</h2>
-                <div class="txn-columns">
-                    <div class="txn-list">
-                        <h4><span class="icon">&#11015;</span> Largest Expenses</h4>
-                        {% if largest_debits %}
-                            <ul>
-                                {% for txn in largest_debits %}
-                                <li>
-                                    <div class="txn-details">
-                                        <strong>{{ txn.PayeeOrDetails }}</strong>
-                                        <span>{{ txn.Date }}</span>
-                                    </div>
-                                    <span class="txn-amount debit">{{ txn.Debit }}</span>
-                                </li>
-                                {% endfor %}
-                            </ul>
-                        {% else %}
-                            <p>No debit transactions found in this period.</p>
-                        {% endif %}
-                    </div>
-                    <div class="txn-list">
-                        <h4><span class="icon">&#11014;</span> Largest Income</h4>
-                         {% if largest_credits %}
-                            <ul>
-                                {% for txn in largest_credits %}
-                                <li>
-                                    <div class="txn-details">
-                                        <strong>{{ txn.PayeeOrDetails }}</strong>
-                                        <span>{{ txn.Date }}</span>
-                                    </div>
-                                    <span class="txn-amount credit">{{ txn.Credit }}</span>
-                                </li>
-                                {% endfor %}
-                            </ul>
-                        {% else %}
-                            <p>No credit transactions found in this period.</p>
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-
 
             <div class="graph-row">
                 {% if category_pie_url %}
