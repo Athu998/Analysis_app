@@ -112,7 +112,7 @@
         p { color: var(--text-secondary); line-height: 1.6; }
 
         .upload-container h2 { animation: fadeIn 0.5s ease-out 0.1s backwards; }
-        .upload-container p { animation: fadeIn 0.5s ease-out 0.2s backwards; }
+        .upload-container > p { animation: fadeIn 0.5s ease-out 0.2s backwards; }
         .upload-container .upload-form { animation: fadeIn 0.5s ease-out 0.3s backwards; }
 
         .upload-form { padding: 20px; border-radius: 8px; background: var(--glass-light-bg); backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-border); text-align: center; }
@@ -126,7 +126,7 @@
         .error { color: #ffc4c4; background-color: rgba(140, 28, 28, 0.7); backdrop-filter: var(--glass-blur); border: 1px solid #ff4d4d; padding: 15px; border-radius: 8px; margin-top: 20px; font-weight: bold; animation: fadeIn 0.5s ease-out; }
 
         .results { max-width: 1000px; margin: 20px auto; text-align: center; }
-        .results-header { margin-bottom: 20px; animation: fadeIn 0.6s var(--smooth-curve); }
+        .results-header { margin-bottom: 20px; animation: slideUp 0.6s var(--smooth-curve) forwards; opacity: 0; animation-delay: 0.1s; }
         .download-buttons { display: flex; justify-content: center; gap: 15px; flex-wrap: wrap; margin-top: 10px; }
         .graph-row { display: flex; flex-wrap: wrap; justify-content: space-around; gap: 20px; margin-top: 20px; }
         .graph-container {
@@ -135,13 +135,14 @@
             border-radius: 8px; box-shadow: var(--light-shadow); transition: all 0.3s var(--smooth-curve);
             opacity: 0; animation: slideUp 0.6s var(--smooth-curve) forwards;
         }
-        .results .graph-row:nth-of-type(1) .graph-container:nth-child(1) { animation-delay: 0.2s; }
-        .results .graph-row:nth-of-type(1) .graph-container:nth-child(2) { animation-delay: 0.3s; }
-        .results .graph-row:nth-of-type(2) .graph-container:nth-child(1) { animation-delay: 0.4s; }
-        .results .graph-row:nth-of-type(2) .graph-container:nth-child(2) { animation-delay: 0.5s; }
-        .results .graph-row:nth-of-type(3) .graph-container:nth-child(1) { animation-delay: 0.6s; }
-        .results .graph-row:nth-of-type(3) .graph-container:nth-child(2) { animation-delay: 0.7s; }
-        .results .graph-row:nth-of-type(4) .graph-container:nth-child(1) { animation-delay: 0.8s; }
+        /* Stagger graph animations */
+        .results .graph-row:nth-of-type(1) .graph-container:nth-child(1) { animation-delay: 0.3s; } /* Category Pie */
+        .results .graph-row:nth-of-type(1) .graph-container:nth-child(2) { animation-delay: 0.4s; } /* Total D/C Pie */
+        .results .graph-row:nth-of-type(2) .graph-container:nth-child(1) { animation-delay: 0.5s; } /* Trend */
+        .results .graph-row:nth-of-type(2) .graph-container:nth-child(2) { animation-delay: 0.6s; } /* Day of Week */
+        .results .graph-row:nth-of-type(3) .graph-container:nth-child(1) { animation-delay: 0.7s; } /* Monthly Bar */
+        .results .graph-row:nth-of-type(3) .graph-container:nth-child(2) { animation-delay: 0.8s; } /* Balance Line */
+        .results .graph-row:nth-of-type(4) .graph-container:nth-child(1) { animation-delay: 0.9s; } /* Top 10 */
 
 
         .graph-container:hover { transform: translateY(-5px); box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3); }
@@ -165,7 +166,12 @@
         .upload-note .icon { color: var(--accent-color); }
 
 
-        .largest-transactions { margin-top: 20px; animation: fadeIn 0.6s var(--smooth-curve) 0.1s backwards; }
+        .largest-transactions {
+            margin-top: 20px;
+            opacity: 0;
+            animation: slideUp 0.6s var(--smooth-curve) forwards;
+            animation-delay: 0.2s;
+         }
         .txn-columns { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 30px; }
         .txn-list { flex: 1 1 45%; min-width: 280px; text-align: left; }
         .txn-list h4 { color: var(--text-color); font-size: 1.1em; font-weight: 600; margin-bottom: 15px; border-bottom: 1px solid var(--glass-border); padding-bottom: 8px; text-shadow: var(--text-shadow); }
