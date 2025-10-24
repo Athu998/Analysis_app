@@ -6,8 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from flask import Flask, request, render_template, send_from_directory, url_for
 import io
-import re
-import pdfplumber # <-- NEW: Import pdfplumber
+import re # Import regex for categorization
 
 # --- Configuration ---
 app = Flask(__name__)
@@ -44,91 +43,6 @@ def categorize_transaction(details_or_payee):
             return category
     return 'Other'
 
-# === NEW: PDF Extraction Function ===
-def extract_data_from_pdf(pdf_file_stream):
-    """
-    Attempts to extract transaction data from a PDF file stream using pdfplumber.
-    Assumes a table structure similar to PhonePe statements.
-    Returns a pandas DataFrame or None if extraction fails.
-    """
-    all_transactions = []
-    expected_header = ['Date', 'Transaction Details', 'Type', 'Amount'] # Adjust if needed
-
-    try:
-        with pdfplumber.open(pdf_file_stream) as pdf:
-            for page in pdf.pages:
-                # Try extracting tables first
-                tables = page.extract_tables()
-                found_table = False
-                for table in tables:
-                    if table and len(table) > 1: # Check if table exists and has rows
-                        header = [str(h).strip() if h is not None else '' for h in table[0]] # Get header
-                        # Check if header looks like our expected transaction table header
-                        # This is a basic check, might need adjustment
-                        if all(col in header for col in ['Date', 'Type', 'Amount']):
-                            found_table = True
-                            # Find indices of required columns
-                            try:
-                                date_idx = header.index('Date')
-                                details_idx = header.index('Transaction Details')
-                                type_idx = header.index('Type')
-                                amount_idx = header.index('Amount')
-                            except ValueError:
-                                print(f"Warning: Could not find all expected columns in table header: {header}")
-                                continue # Skip this table if essential columns missing
-
-                            for row in table[1:]: # Skip header row
-                                # Ensure row has enough columns
-                                if len(row) > max(date_idx, details_idx, type_idx, amount_idx):
-                                    date = str(row[date_idx]).strip() if row[date_idx] else None
-                                    details = str(row[details_idx]).strip() if row[details_idx] else ''
-                                    txn_type = str(row[type_idx]).strip().upper() if row[type_idx] else None
-                                    amount_str = str(row[amount_idx]).strip() if row[amount_idx] else None
-
-                                    # Basic validation: need date, type, and amount
-                                    if date and txn_type in ['DEBIT', 'CREDIT'] and amount_str:
-                                         # Attempt to clean amount (remove currency symbols, commas)
-                                        try:
-                                            amount = float(re.sub(r'[₹,]', '', amount_str))
-                                            all_transactions.append({
-                                                'Date': date,
-                                                'Transaction Details': details,
-                                                'Type': txn_type,
-                                                'Amount': amount
-                                            })
-                                        except (ValueError, TypeError):
-                                            print(f"Warning: Could not parse amount '{amount_str}' in row: {row}")
-                                            continue # Skip row if amount is invalid
-                                else:
-                                     # Sometimes extra info is extracted as rows, try to skip them
-                                     # print(f"Skipping row with potentially missing data: {row}")
-                                     pass
-
-
-                # Basic Text extraction fallback (less reliable) - You might need to add this
-                # if not found_table:
-                #     text = page.extract_text()
-                #     # Add complex regex logic here to parse the text line by line
-                #     # This is highly dependent on the PDF's specific text layout
-                #     pass
-
-        if not all_transactions:
-            return None # No transactions found
-
-        df = pd.DataFrame(all_transactions)
-        # Convert Date - might need more robust parsing depending on PDF format
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        df = df.dropna(subset=['Date', 'Amount']) # Ensure essential data is valid
-        return df
-
-    except Exception as e:
-        print(f"Error reading PDF: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-# === END NEW PDF Function ===
-
-
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -140,47 +54,54 @@ def upload_file():
     file = request.files['file']
     if file.filename == '':
         return render_template('index.html', error="No file selected.")
-
-    # === UPDATED: Check for PDF extension ===
-    if not file.filename.lower().endswith('.pdf'):
-        return render_template('index.html', error="Invalid file type. Please upload a PDF file (.pdf).")
+    if not file.filename.endswith(('.xls', '.xlsx')):
+        return render_template('index.html', error="Invalid file type. Please upload an Excel file (.xls or .xlsx).")
 
     try:
-        # --- 1. Read & Clean Data (Now from PDF) ---
-        df = extract_data_from_pdf(file.stream) # Pass the file stream
-
-        if df is None or df.empty:
-            return render_template('index.html', error="Could not extract valid transaction data from the PDF. The format might be unsupported.")
-
-        # --- Data cleaning and analysis proceeds as before ---
+        # --- 1. Read & Clean Data ---
+        all_sheets = pd.read_excel(file, sheet_name=None)
+        transaction_dfs = []
+        required_cols = {'Date', 'Transaction Details', 'Type', 'Amount'}
+        for sheet_name, df_sheet in all_sheets.items():
+            if required_cols.issubset(df_sheet.columns):
+                transaction_dfs.append(df_sheet)
+        if not transaction_dfs:
+            return render_template('index.html', error="Could not find transaction data. Ensure file has 'Date', 'Type', and 'Amount' columns.")
+        df = pd.concat(transaction_dfs, ignore_index=True)
+        df = df.dropna(subset=['Date', 'Type', 'Amount'])
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce')
         df['Debit'] = df.apply(lambda r: r['Amount'] if r['Type'] == 'DEBIT' else 0, axis=1)
         df['Credit'] = df.apply(lambda r: r['Amount'] if r['Type'] == 'CREDIT' else 0, axis=1)
+        df = df.dropna(subset=['Date', 'Amount'])
+        if df.empty:
+            return render_template('index.html', error="No valid transaction data found after cleaning.")
 
         start_date = df['Date'].min().strftime('%B %d, %Y')
         end_date = df['Date'].max().strftime('%B %d, %Y')
 
+        # --- 2. Perform Analyses ---
+
         # Analysis 1: Payee & Category
-        def get_payee(row): # Simplified get_payee for PDF
-             details = str(row['Transaction Details'])
-             if details.startswith('Paid to '):
-                 return details.replace('Paid to ', '').strip()
-             # Basic fallback if details exist
-             elif details:
-                  # Take first line or a limited number of characters? Be careful.
-                  return details.split('\n')[0].strip() # Example: Take only first line
-             return 'N/A'
+        def get_payee(row):
+            details = str(row['Transaction Details'])
+            if row['Type'] == 'DEBIT' and details.startswith('Paid to '):
+                return details.replace('Paid to ', '').strip()
+            elif details: # Try getting text from details for Credits or non-"Paid to" Debits
+                 return details.split('\n')[0].strip() # Example: Take only first line
+            return 'N/A' # Use N/A if no suitable text found
 
         df['PayeeOrDetails'] = df.apply(get_payee, axis=1)
         df['Category'] = df.apply(lambda row: categorize_transaction(row['PayeeOrDetails']), axis=1)
 
-        # Analysis 2: Top 10 Spending
+        # Analysis 2: Top 10 Spending (Use PayeeOrDetails for consistency)
         spending_df = df[(df['Type'] == 'DEBIT') & (df['PayeeOrDetails'] != 'N/A')]
         top_10_spending = spending_df.groupby('PayeeOrDetails')['Amount'].sum().nlargest(10).reset_index()
 
-        # Analysis 3: Monthly Summary
+        # Analysis 3: Monthly Summary (Used for multiple things)
         df['Month'] = df['Date'].dt.to_period('M')
         monthly_summary = df.groupby('Month')[['Debit', 'Credit']].sum().reset_index()
-        monthly_summary['MonthStr'] = monthly_summary['Month'].astype(str)
+        monthly_summary['MonthStr'] = monthly_summary['Month'].astype(str) # String version for plotting/saving
 
         # Analysis 4: Total Debit vs Credit
         total_debit = df['Debit'].sum()
@@ -194,29 +115,27 @@ def upload_file():
         # Analysis 6: Spending by Category
         category_spending = df[df['Type'] == 'DEBIT'].groupby('Category')['Amount'].sum().sort_values(ascending=False)
 
-        # Analysis 7: Largest Transactions
+        # === NEW Analysis 7: Largest Transactions ===
         largest_debits = df[df['Debit'] > 0].nlargest(5, 'Debit')[['Date', 'PayeeOrDetails', 'Debit']]
         largest_credits = df[df['Credit'] > 0].nlargest(5, 'Credit')[['Date', 'PayeeOrDetails', 'Credit']]
+        # Convert to list of dicts for easier handling in template
         largest_debits_list = largest_debits.to_dict('records')
         largest_credits_list = largest_credits.to_dict('records')
+        # Format date and amount for display
         for item in largest_debits_list:
             item['Date'] = item['Date'].strftime('%b %d, %Y')
-            item['Debit'] = f"₹{item['Debit']:,.2f}"
+            item['Debit'] = f"₹{item['Debit']:,.2f}" # Format as currency
         for item in largest_credits_list:
             item['Date'] = item['Date'].strftime('%b %d, %Y')
-            item['Credit'] = f"₹{item['Credit']:,.2f}"
+            item['Credit'] = f"₹{item['Credit']:,.2f}" # Format as currency
+        # === END NEW ===
 
         # --- 3. Save Excel Summary ---
-        summary_filename = 'summary_report.xlsx' # Keep Excel download for summary
+        summary_filename = 'summary_report_with_graphs.xlsx'
         summary_path = os.path.join(app.config['UPLOAD_FOLDER'], summary_filename)
-        with pd.ExcelWriter(summary_path, engine='xlsxwriter') as writer:
-            summary_df_to_write = monthly_summary[['MonthStr', 'Debit', 'Credit']].rename(columns={'MonthStr':'Month'})
-            summary_df_to_write.to_excel(writer, index=False, sheet_name='Summary')
-            # Note: Embedding images in Excel won't work easily with PDF input unless graphs are regenerated
-            # Keeping the simple Excel export for now.
+        graph_paths = {} # Initialize graph_paths here before generating graphs
 
-        # --- 4. Generate Graphs (Code remains the same, uses the df from PDF) ---
-        graph_paths = {} # Dictionary to store paths of generated graphs
+        # --- 4. Generate Graphs (Save paths needed for Excel) ---
 
         # Graph 1: Spending by Category Pie Chart
         category_pie_filename = 'category_spending_pie.png'
@@ -253,7 +172,16 @@ def upload_file():
         monthly_summary_melted_bar = monthly_summary.melt('MonthStr', var_name='Type', value_name='Amount', value_vars=['Debit', 'Credit'])
         plt.figure(figsize=(10, 6))
         ax = sns.barplot(data=monthly_summary_melted_bar, x='MonthStr', y='Amount', hue='Type', palette={'Debit': '#E74C3C', 'Credit': '#2ECC71'})
-        # ... (rest of graph 2 plotting code remains the same) ...
+        ax.set_title('Monthly Debit vs. Credit', color='white', fontsize=16, pad=20)
+        ax.tick_params(axis='x', colors='white', rotation=45)
+        ax.tick_params(axis='y', colors='white')
+        ax.set_xlabel('Month', color='white', fontsize=12)
+        ax.set_ylabel('Amount (₹)', color='white', fontsize=12)
+        ax.legend(title_fontsize='13', labelcolor='white')
+        ax.set_facecolor('none')
+        for p in ax.patches:
+            if p.get_height() > 0:
+                ax.annotate(f'₹{p.get_height():,.0f}', (p.get_x() + p.get_width() / 2., p.get_height()), ha='center', va='bottom', xytext=(0, 5), textcoords='offset points', color='white', fontsize=10)
         plt.tight_layout()
         graph_filename = 'monthly_summary.png'
         graph_path = os.path.join(app.config['STATIC_IMAGES_FOLDER'], graph_filename)
@@ -267,7 +195,13 @@ def upload_file():
         df_sorted['Balance'] = df_sorted['Credit'].cumsum() - df_sorted['Debit'].cumsum()
         plt.figure(figsize=(10, 6))
         ax = sns.lineplot(data=df_sorted, x='Date', y='Balance', color='#00f2ea', linewidth=2.5)
-        # ... (rest of graph 3 plotting code remains the same) ...
+        ax.set_title('Cumulative Balance Over Time', color='white', fontsize=16, pad=20)
+        ax.tick_params(axis='x', colors='white', rotation=45)
+        ax.tick_params(axis='y', colors='white')
+        ax.set_xlabel('Date', color='white', fontsize=12)
+        ax.set_ylabel('Balance (₹)', color='white', fontsize=12)
+        ax.grid(True, linestyle='--', alpha=0.3, color='white')
+        ax.set_facecolor('none')
         plt.tight_layout()
         cum_graph_filename = 'cumulative_balance.png'
         cum_graph_path = os.path.join(app.config['STATIC_IMAGES_FOLDER'], cum_graph_filename)
@@ -283,7 +217,14 @@ def upload_file():
         if not top_10_spending.empty:
             plt.figure(figsize=(10, 8))
             ax = sns.barplot(data=top_10_spending, y='PayeeOrDetails', x='Amount', palette='viridis_r')
-            # ... (rest of graph 4 plotting code remains the same) ...
+            ax.set_title('Top 10 Spending (by Payee/Details)', color='white', fontsize=16, pad=20)
+            ax.tick_params(axis='x', colors='white')
+            ax.tick_params(axis='y', colors='white', labelsize=10)
+            ax.set_xlabel('Total Amount (₹)', color='white', fontsize=12)
+            ax.set_ylabel('Payee / Details', color='white', fontsize=12)
+            ax.set_facecolor('none')
+            for i, (value, name) in enumerate(zip(top_10_spending['Amount'], top_10_spending['PayeeOrDetails'])):
+                ax.text(value + 1, i, f' ₹{value:,.0f}', va='center', ha='left', color='white', fontsize=10)
             plt.tight_layout()
             top_10_graph_path = os.path.join(app.config['STATIC_IMAGES_FOLDER'], top_10_graph_filename)
             plt.savefig(top_10_graph_path, transparent=True, bbox_inches='tight')
@@ -301,7 +242,7 @@ def upload_file():
             colors = ['#E74C3C', '#2ECC71']
             plt.figure(figsize=(8, 8))
             plt.pie(pie_data, labels=pie_labels, colors=colors, autopct='%1.1f%%', textprops={'color': 'white', 'fontsize': 12, 'fontweight': 'bold'}, wedgeprops={'edgecolor': 'white', 'linewidth': 1})
-            # ... (rest of graph 5 plotting code remains the same) ...
+            plt.title('Total Debit vs. Credit', color='white', fontsize=16, pad=20)
             plt.tight_layout()
             pie_chart_path = os.path.join(app.config['STATIC_IMAGES_FOLDER'], pie_chart_filename)
             plt.savefig(pie_chart_path, transparent=True, bbox_inches='tight')
@@ -316,7 +257,16 @@ def upload_file():
         if day_of_week_spending is not None and not day_of_week_spending.fillna(0).eq(0).all():
             plt.figure(figsize=(10, 6))
             ax = sns.barplot(x=day_of_week_spending.index, y=day_of_week_spending.values, palette='plasma')
-            # ... (rest of graph 6 plotting code remains the same) ...
+            ax.set_title('Spending by Day of Week', color='white', fontsize=16, pad=20)
+            ax.tick_params(axis='x', colors='white', rotation=45)
+            ax.tick_params(axis='y', colors='white')
+            ax.set_xlabel('Day of Week', color='white', fontsize=12)
+            ax.set_ylabel('Total Amount (₹)', color='white', fontsize=12)
+            ax.set_facecolor('none')
+            for p in ax.patches:
+                height = p.get_height()
+                if pd.notna(height) and height > 0:
+                    ax.annotate(f'₹{height:,.0f}', (p.get_x() + p.get_width() / 2., height), ha='center', va='bottom', xytext=(0, 5), textcoords='offset points', color='white', fontsize=10)
             plt.tight_layout()
             day_of_week_path = os.path.join(app.config['STATIC_IMAGES_FOLDER'], day_of_week_filename)
             plt.savefig(day_of_week_path, transparent=True, bbox_inches='tight')
@@ -324,7 +274,7 @@ def upload_file():
             day_of_week_url = f'images/{day_of_week_filename}'
             if os.path.exists(day_of_week_path): graph_paths['day_of_week'] = day_of_week_path
 
-        # Graph 7: Income vs. Expense Trend
+        # === NEW Graph 7: Income vs. Expense Trend ===
         trend_filename = 'income_expense_trend.png'
         trend_url = None
         trend_path = None
@@ -333,16 +283,42 @@ def upload_file():
             plt.figure(figsize=(10, 6))
             plt.plot(monthly_summary['MonthDate'], monthly_summary['Credit'], marker='o', linestyle='-', color='#2ECC71', linewidth=2.5, label='Income (Credit)')
             plt.plot(monthly_summary['MonthDate'], monthly_summary['Debit'], marker='o', linestyle='-', color='#E74C3C', linewidth=2.5, label='Expenses (Debit)')
-            # ... (rest of graph 7 plotting code remains the same) ...
+            plt.title('Monthly Income vs. Expense Trend', color='white', fontsize=16, pad=20)
+            plt.xlabel('Month', color='white', fontsize=12)
+            plt.ylabel('Amount (₹)', color='white', fontsize=12)
+            plt.xticks(rotation=45, color='white')
+            plt.yticks(color='white')
+            plt.grid(True, linestyle='--', alpha=0.3, color='white')
+            plt.legend(labelcolor='white')
+            plt.gca().set_facecolor('none')
             plt.tight_layout()
             trend_path = os.path.join(app.config['STATIC_IMAGES_FOLDER'], trend_filename)
             plt.savefig(trend_path, transparent=True, bbox_inches='tight')
             plt.close()
             trend_url = f'images/{trend_filename}'
             if os.path.exists(trend_path): graph_paths['trend'] = trend_path
+        # === END NEW ===
 
+        # --- 5. Save Excel Summary WITH Images ---
+        # The code to embed images remains the same
+        with pd.ExcelWriter(summary_path, engine='xlsxwriter') as writer:
+            summary_df_to_write = monthly_summary[['MonthStr', 'Debit', 'Credit']].rename(columns={'MonthStr':'Month'})
+            summary_df_to_write.to_excel(writer, index=False, sheet_name='Summary')
+            workbook = writer.book
+            worksheet = writer.sheets['Summary']
+            insert_row = len(summary_df_to_write) + 3
+            image_options = {'x_scale': 0.5, 'y_scale': 0.5}
 
-        # --- 5. Render the page with results ---
+            # Define the order and check existence before inserting
+            image_order = ['category', 'debit_credit', 'trend', 'day_of_week', 'monthly_bar', 'cumulative', 'top_10']
+            row_heights = {'category': 30, 'debit_credit': 30, 'trend': 25, 'day_of_week': 25, 'monthly_bar': 25, 'cumulative': 25, 'top_10': 30}
+
+            for key in image_order:
+                 if key in graph_paths:
+                     worksheet.insert_image(f'A{insert_row}', graph_paths[key], image_options)
+                     insert_row += row_heights.get(key, 25) # Add estimated height
+
+        # --- 6. Render the page with results ---
         return render_template('index.html',
                                category_pie_url=category_pie_url,
                                graph_url=graph_url,
@@ -351,7 +327,7 @@ def upload_file():
                                pie_chart_url=pie_chart_url,
                                day_of_week_url=day_of_week_url,
                                trend_url=trend_url,
-                               download_filename=summary_filename, # Keep Excel download
+                               download_filename=summary_filename,
                                start_date=start_date,
                                end_date=end_date,
                                largest_debits=largest_debits_list,
@@ -362,12 +338,11 @@ def upload_file():
         print(f"Error during analysis: {e}")
         import traceback
         traceback.print_exc()
-        return render_template('index.html', error=f"An error occurred during PDF processing or analysis. Please check file format.")
+        return render_template('index.html', error=f"An error occurred during analysis. Please check file format.")
 
 
 @app.route('/download/<filename>')
 def download_file(filename):
-    """Provides the download link for the processed file."""
     return send_from_directory(app.config['UPLOAD_FOLDER'],
                                filename,
                                as_attachment=True)
