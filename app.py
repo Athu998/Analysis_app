@@ -9,8 +9,7 @@ import io
 import re # Import regex for categorization
 import traceback # For detailed error printing
 import numpy as np # For conditional logic
-import csv # For manual header detection
-import chardet # Try encoding detection again
+import chardet # Library to detect encoding
 
 # --- Configuration ---
 app = Flask(__name__)
@@ -43,108 +42,131 @@ def categorize_transaction(details_or_payee):
         return 'Other'
     text = details_or_payee.lower()
     for category, keywords in CATEGORY_KEYWORDS.items():
+        # Use word boundaries for better matching
         if any(re.search(r'\b' + re.escape(keyword) + r'\b', text) for keyword in keywords):
             return category
     return 'Other'
 
 # --- 1. AGGRESSIVE CLEANING FUNCTION ---
 def clean_col_name(col_name):
-    """ Cleans column names: lowercase, no spaces/newlines. """
-    if not isinstance(col_name, str): return ""
+    """
+    Aggressively cleans column names to be lowercase and have NO spaces.
+    e.g., "Transac tion\nTimesta mp" -> "transactiontimestamp"
+    """
+    if not isinstance(col_name, str):
+        return ""
+    
     clean_col = str(col_name).lower().replace('\n', '').replace('\r', '').replace('\t', '')
+    # Remove all whitespace (spaces)
     clean_col = re.sub(r'\s+', '', clean_col)
     return clean_col.strip()
 
-# --- 2. "DETECTOR" FUNCTION ---
 def detect_file_type(df_columns):
-    """ Analyzes *cleaned* column names to detect the file type. """
+    """
+    Analyzes *cleaned* column names to detect the file type.
+    """
     cleaned_cols = {clean_col_name(col) for col in df_columns}
-    print(f"--- DEBUG: Columns for detection: {cleaned_cols} ---")
-
-    # POP UPI Report Check
+    print(f"--- DEBUG: Columns for detection: {cleaned_cols} ---") 
+    
+    # --- Detection Logic for POP UPI Report ---
     if 'payervpa' in cleaned_cols and 'receivervpa' in cleaned_cols and 'transactiontimestamp' in cleaned_cols:
         print("Detected: POP_UPI_FORMAT")
         return 'POP_UPI_FORMAT'
 
-    # PhonePe Statement Check (header=2 type)
-    # Check for the *essential* cleaned names for this format
-    if 'date' in cleaned_cols and 'transactiondetails' in cleaned_cols and 'type' in cleaned_cols and 'amount' in cleaned_cols:
-        print("Detected: PHONEPE_STATEMENT_FORMAT")
+    if 'transactiondetails' in cleaned_cols and 'date' in cleaned_cols and 'type' in cleaned_cols and 'amount' in cleaned_cols:
+        print("Detected: PHONEPE_STATEMENT_FORMAT") # Use a new name
         return 'PHONEPE_STATEMENT_FORMAT'
 
     print(f"Detected: UNKNOWN_FORMAT.")
     return 'UNKNOWN_FORMAT'
 
-# --- 3. "EXPERT" PROCESSOR FUNCTIONS ---
-
 def process_phonepe_statement_format(df):
-    """ Expert function for the newer PhonePe statement format. """
+    """
+    Expert function for the newer PhonePe statement format
+    (where header is on row 3 and amount has symbols).
+    """
     print("Processing with: process_phonepe_statement_format")
     norm_df = pd.DataFrame()
-    original_cols = {clean_col_name(col): col for col in df.columns}
-
-    # Use the *original* column names found by pandas after header detection
+    
+    # Find columns using the cleaning logic
+    col_map = {}
+    # Use original column names directly as pandas read them correctly (due to header=2)
+    original_cols = {clean_col_name(col): col for col in df.columns} 
+    
     date_col = original_cols.get('date')
     details_col = original_cols.get('transactiondetails')
     type_col = original_cols.get('type')
     amount_col = original_cols.get('amount')
-
+    
     if not all([date_col, details_col, type_col, amount_col]):
         missing = [k for k, v in locals().items() if v is None and k.endswith('_col')]
-        raise ValueError(f"PhonePe Statement file missing required columns after header detection. Could not find: {missing}. Columns found: {list(df.columns)}")
+        raise ValueError(f"PhonePe Statement file missing required columns. Could not find: {missing}")
 
-    # Drop rows where essential original columns have NaN values
+    # --- Start of logic specific to this format ---
+    # Drop rows where essential original columns are missing BEFORE cleaning
     df = df.dropna(subset=[date_col, type_col, amount_col])
 
-    # Clean Date data (add stripping just in case)
+    # Clean Date (seems okay, but use fallback)
     try:
-        norm_df['Std_Date'] = pd.to_datetime(df[date_col].astype(str).str.strip(), format='%b %d, %Y', errors='raise')
+        norm_df['Std_Date'] = pd.to_datetime(df[date_col], format='%b %d, %Y', errors='raise')
     except (ValueError, TypeError):
-        norm_df['Std_Date'] = pd.to_datetime(df[date_col].astype(str).str.strip(), errors='coerce')
+        norm_df['Std_Date'] = pd.to_datetime(df[date_col], errors='coerce') 
 
-    # Clean Amount data
-    amount_str_cleaned = df[amount_col].astype(str).str.replace(r'[₹,]', '', regex=True).str.strip()
+    # Clean Amount (remove ₹ and ,)
+    amount_str_cleaned = df[amount_col].astype(str).str.replace(r'[₹,]', '', regex=True)
     amount_numeric = pd.to_numeric(amount_str_cleaned, errors='coerce').fillna(0)
-
-    # Clean and Determine Type
-    type_str_cleaned = df[type_col].astype(str).str.strip().str.upper()
-    is_debit = (type_str_cleaned == 'DEBIT')
-    is_credit = (type_str_cleaned == 'CREDIT')
+    
+    # Determine Type and create Debit/Credit
+    df[type_col] = df[type_col].astype(str).str.upper() # Ensure uppercase for comparison
+    is_debit = (df[type_col] == 'DEBIT')
+    is_credit = (df[type_col] == 'CREDIT')
 
     norm_df['Std_Debit'] = amount_numeric.where(is_debit, 0)
     norm_df['Std_Credit'] = amount_numeric.where(is_credit, 0)
 
-    # Extract Payee/Description
+    # Extract Payee/Description from multi-line details
     def get_payee_details(row_details):
-        if not isinstance(row_details, str): return 'N/A'
+        if not isinstance(row_details, str):
+            return 'N/A'
         lines = row_details.split('\n')
         first_line = lines[0].strip()
-        if first_line.startswith('Paid to '): return first_line.replace('Paid to ', '').strip()
-        if first_line.startswith('Received from '): return first_line.replace('Received from ', '').strip()
-        if first_line.startswith('Transfer to '): return first_line # Keep 'Transfer to XXXXX'
-        if 'recharged' in first_line.lower(): return first_line
-        if 'bill paid' in first_line.lower(): return first_line
-        # Handle cases where description might be on second line if first is just time
-        if len(lines) > 1 and re.match(r'\d{2}:\d{2}\s*(?:am|pm)', first_line, re.IGNORECASE):
-             second_line = lines[1].strip()
-             if second_line: return second_line # Use second line if first is just time
-        return first_line if first_line else 'N/A' # Fallback to first line
+        
+        # Specific patterns for this format
+        if first_line.startswith('Paid to '):
+            return first_line.replace('Paid to ', '').strip()
+        elif first_line.startswith('Received from '):
+             return first_line.replace('Received from ', '').strip()
+        elif first_line.startswith('Transfer to '):
+             return first_line # Keep 'Transfer to XXXXX' as description
+        # Add more patterns if needed (e.g., 'Mobile recharged')
+        elif 'recharged' in first_line.lower():
+             return first_line # Keep 'Mobile recharged XXXX'
+        elif 'bill paid' in first_line.lower():
+             return first_line # Keep 'Electricity bill paid XXXX'
+        
+        # If no specific pattern, return the first line as description
+        return first_line if first_line else 'N/A'
 
     norm_df['Std_Description'] = df[details_col].apply(get_payee_details)
+    # --- End of specific logic ---
 
     norm_df['Std_Type'] = np.where(is_debit, 'DEBIT', 'CREDIT')
     norm_df['Std_Amount'] = amount_numeric
-
+    
     # Final cleanup
     norm_df = norm_df.dropna(subset=['Std_Date'])
-    norm_df = norm_df[norm_df['Std_Amount'] > 0]
+    norm_df = norm_df[norm_df['Std_Amount'] > 0] 
     return norm_df
 
-
 def process_pop_upi_format(df):
-    """ Expert function for the POP_UPI_TRANSACTION_REPORT file. """
+    """
+    Expert function for the POP_UPI_TRANSACTION_REPORT file.
+    (This function should be correct now)
+    """
     print("Processing with: process_pop_upi_format")
     norm_df = pd.DataFrame()
+    
+    col_map = {}
     cleaned_to_original = {clean_col_name(col): col for col in df.columns}
 
     date_col = cleaned_to_original.get('transactiontimestamp')
@@ -152,18 +174,17 @@ def process_pop_upi_format(df):
     amount_col = cleaned_to_original.get('amount')
     payer_col = cleaned_to_original.get('payername')
     receiver_col = cleaned_to_original.get('receivername')
-
+            
     if not all([date_col, type_col, amount_col, payer_col, receiver_col]):
-        missing = [k for k, v in locals().items() if v is None and k.endswith('_col')]
-        raise ValueError(f"POP UPI file missing required columns. Could not find: {missing}")
+        missing = [k for k,v in locals().items() if v is None and k.endswith('_col')]
+        raise ValueError(f"POP UPI file is missing required columns. Could not find: {missing}")
 
-    # Clean data
     date_str_cleaned = df[date_col].astype(str).str.replace(r'\s+', '', regex=True)
     norm_df['Std_Date'] = pd.to_datetime(date_str_cleaned, errors='coerce')
-
+    
     amount_str_cleaned = df[amount_col].astype(str).str.replace(r'[\s,]', '', regex=True)
     amount_numeric = pd.to_numeric(amount_str_cleaned, errors='coerce').fillna(0)
-
+    
     type_str_cleaned = df[type_col].astype(str).str.replace(r'\s+', '', regex=True).str.upper()
 
     is_debit = (type_str_cleaned == 'PAY')
@@ -171,93 +192,20 @@ def process_pop_upi_format(df):
 
     norm_df['Std_Debit'] = amount_numeric.where(is_debit, 0)
     norm_df['Std_Credit'] = amount_numeric.where(is_credit, 0)
-
-    norm_df['Std_Description'] = np.where(is_debit,
-                                        df[receiver_col].astype(str).str.replace(r'[\n\r]+', ' ', regex=True).str.strip(),
-                                        df[payer_col].astype(str).str.replace(r'[\n\r]+', ' ', regex=True).str.strip())
-
+    
+    norm_df['Std_Description'] = np.where(is_debit, 
+                                        df[receiver_col].astype(str).str.replace(r'[\n\r]+', ' ', regex=True), 
+                                        df[payer_col].astype(str).str.replace(r'[\n\r]+', ' ', regex=True))
+    norm_df['Std_Description'] = norm_df['Std_Description'].str.strip()
+    
     norm_df['Std_Amount'] = amount_numeric
     norm_df['Std_Type'] = np.where(is_debit, 'DEBIT', 'CREDIT')
 
-    norm_df = norm_df.dropna(subset=['Std_Date'])
+    # Final cleanup
+    norm_df = norm_df.dropna(subset=['Std_Date']) 
     norm_df = norm_df[(norm_df['Std_Debit'] > 0) | (norm_df['Std_Credit'] > 0)]
     return norm_df
 
-# --- 4. HELPER TO FIND HEADER ROW (MORE ROBUST) ---
-def find_csv_header(file_stream, encoding='utf-8'):
-    """
-    Reads the first few lines of a CSV stream to find the header row index (0-based).
-    Returns the header index, or None if not found.
-    """
-    keywords = {'date', 'transaction', 'type', 'amount'} # Must contain these
-    max_lines_to_check = 10
-    potential_header = -1
-
-    try:
-        # Use csv reader for better handling of quotes and delimiters
-        # We need to decode the stream for csv.reader
-        # Peek at the first few KB to read lines correctly
-        peek_data = file_stream.peek(4096)
-        # Use io.TextIOWrapper to handle decoding for csv.reader
-        text_stream = io.TextIOWrapper(io.BytesIO(peek_data), encoding=encoding, errors='replace')
-        reader = csv.reader(text_stream)
-
-        for i, row in enumerate(reader):
-            if i >= max_lines_to_check:
-                break
-            if not row: # Skip empty rows
-                continue
-
-            # Check if this row looks like a header
-            row_content_lower = {str(cell).lower().strip() for cell in row}
-            
-            # Count matches, ignoring partial matches for more accuracy
-            matches = 0
-            if 'date' in row_content_lower: matches += 1
-            if 'transaction details' in row_content_lower: matches +=1
-            if 'type' in row_content_lower: matches += 1
-            if 'amount' in row_content_lower: matches += 1
-
-            # Requires finding Date, Type, Amount, and Transaction Details
-            if matches >= 4:
-                print(f"--- Found potential header on row {i} (0-indexed) with keywords: {row_content_lower} ---")
-                potential_header = i
-                break # Found the header
-
-    except Exception as e:
-        print(f"Error finding header row using csv.reader: {e}")
-        # Fallback if csv.reader fails (e.g., bad encoding guess)
-        potential_header = -1 # Reset
-
-    # If csv.reader failed or didn't find it, try simpler text search (less reliable)
-    if potential_header == -1:
-        print("CSV reader failed or didn't find header, trying simple text search...")
-        try:
-            file_stream.seek(0) # Reset stream
-            # Read first few lines as text
-            for i in range(max_lines_to_check):
-                 line_bytes = file_stream.readline()
-                 if not line_bytes: break
-                 line = line_bytes.decode(encoding, errors='replace').lower()
-                 if 'date' in line and 'transaction details' in line and 'type' in line and 'amount' in line:
-                      print(f"--- Found potential header via text search on row {i} ---")
-                      potential_header = i
-                      break
-        except Exception as e_text:
-             print(f"Error during text search for header: {e_text}")
-             potential_header = -1 # Indicate failure
-
-    file_stream.seek(0) # IMPORTANT: Reset stream position for pandas
-    
-    # If still not found, return None
-    if potential_header == -1:
-        print("--- Header row not found automatically. ---")
-        return None
-    else:
-        return potential_header
-
-
-# --- 5. MAIN APP ROUTES ---
 
 @app.route('/')
 def index():
@@ -270,53 +218,48 @@ def upload_file():
     file = request.files['file']
     if file.filename == '':
         return render_template('index.html', error="No file selected.")
-
+    
     if not file.filename.endswith(('.xls', '.xlsx', '.csv')):
         return render_template('index.html', error="Invalid file type. Please upload an Excel (.xls, .xlsx) or CSV (.csv) file.")
 
     try:
-        # --- 1. Read File ---
-        all_sheets = {}
-
+    
+        all_sheets = {} 
+        
         if file.filename.endswith('.csv'):
-             # --- NEW ROBUST CSV READING WITH HEADER DETECTION ---
-            try:
-                file.stream.seek(0) # Ensure stream is at the beginning
-
-                # 1. Detect encoding by reading a chunk
-                initial_bytes = file.stream.peek(5000) # Peek without consuming
-                detected_encoding = chardet.detect(initial_bytes)['encoding'] or 'utf-8'
-                print(f"Detected encoding: {detected_encoding}")
-                file.stream.seek(0) # Reset after peeking
-
-                # 2. Find the header row using the detected encoding
-                header_row_index = find_csv_header(file.stream, encoding=detected_encoding)
-
-                # 3. Read the CSV using the found header row (if any) and encoding
-                if header_row_index is None:
-                    # Could not find header, try reading with header=0 as a last resort
-                    print("Could not detect header row automatically, trying header=0...")
-                    df_sheet = pd.read_csv(file.stream, comment=None, header=0,
-                                           engine='python', encoding=detected_encoding, skipinitialspace=True)
-                else:
-                    print(f"Reading CSV with detected header={header_row_index}, encoding={detected_encoding}...")
-                    df_sheet = pd.read_csv(file.stream, comment=None, header=header_row_index,
-                                           engine='python', encoding=detected_encoding, skipinitialspace=True)
-                
-                print(f"--- Successfully read CSV. Columns: {list(df_sheet.columns)} ---")
-                all_sheets['sheet1'] = df_sheet
-
-            except Exception as read_e:
-                print(f"Error during robust CSV reading: {read_e}")
-                traceback.print_exc()
-                return render_template('index.html', error=f"Error reading or parsing CSV file: {read_e}")
-            # --- END ROBUST READING ---
-
-        else: # Excel files
             try:
                 file.stream.seek(0)
-                # For Excel, header detection is usually better handled by pandas
-                all_sheets = pd.read_excel(file, sheet_name=None)
+            
+                print("Attempting to read CSV with header=2 (for PhonePe Statement format)...")
+                df_sheet = pd.read_csv(file, comment=None, engine='python', header=2)
+                file_type_check = detect_file_type(df_sheet.columns)
+
+                if file_type_check != 'PHONEPE_STATEMENT_FORMAT':
+                    print("Header=2 likely incorrect, trying header=0 (for POP UPI format)...")
+                    file.stream.seek(0)
+                    df_sheet = pd.read_csv(file, comment=None, engine='python', header=0) 
+                    print(f"--- Read CSV (header=0). Columns found: {list(df_sheet.columns)} ---")
+                else:
+                    print(f"--- Read CSV (header=2). Columns found: {list(df_sheet.columns)} ---")
+                
+                all_sheets['sheet1'] = df_sheet
+                
+            except Exception as read_e: # Catch other potential errors
+                print(f"General Error reading CSV: {read_e}")
+                traceback.print_exc()
+                try: # Fallback to latin1 just in case encoding was the issue
+                     print("Trying latin1 encoding...")
+                     file.stream.seek(0)
+                     df_sheet = pd.read_csv(file, comment=None, engine='python', encoding='latin1', header=0) # Assume header=0 for this fallback
+                     all_sheets['sheet1'] = df_sheet
+                except Exception as fallback_read_e:
+                    print(f"Fallback CSV read also failed: {fallback_read_e}")
+                    return render_template('index.html', error=f"Error reading CSV file: {read_e}")
+        else: # For Excel files
+            try:
+                file.stream.seek(0) 
+                # Excel files usually handle headers better, read normally
+                all_sheets = pd.read_excel(file, sheet_name=None) 
                 print(f"--- Read Excel. Sheets found: {list(all_sheets.keys())} ---")
             except Exception as read_e:
                 print(f"Error reading Excel: {read_e}")
@@ -326,70 +269,68 @@ def upload_file():
         # --- 2. Detect and Process ---
         all_dfs_normalized = []
         for sheet_name, df_sheet in all_sheets.items():
-            if df_sheet is None or df_sheet.empty or df_sheet.columns.empty:
-                print(f"Skipping empty or headerless sheet '{sheet_name}'.")
+            if df_sheet.empty:
+                print(f"Skipping empty sheet '{sheet_name}'.")
                 continue
-
-            file_type = detect_file_type(df_sheet.columns)
-
+            
+            # --- Detect format based on columns read ---
+            file_type = detect_file_type(df_sheet.columns) 
+            
             try:
                 if file_type == 'POP_UPI_FORMAT':
                     norm_df = process_pop_upi_format(df_sheet)
-                elif file_type == 'PHONEPE_STATEMENT_FORMAT':
+                # === Use the NEW function name ===
+                elif file_type == 'PHONEPE_STATEMENT_FORMAT': 
                     norm_df = process_phonepe_statement_format(df_sheet)
                 else:
                     print(f"Skipping sheet '{sheet_name}': No processor found for UNKNOWN_FORMAT.")
-                    continue
-
+                    continue 
+                
                 if norm_df is not None and not norm_df.empty:
-                    print(f"--- Successfully processed sheet '{sheet_name}' as {file_type}. Rows: {len(norm_df)} ---")
                     all_dfs_normalized.append(norm_df)
                 else:
-                     print(f"Processor for '{file_type}' returned empty DataFrame for sheet '{sheet_name}'. Processing likely failed.")
-                     # Consider adding a specific error message here if needed
+                     print(f"Processor for '{file_type}' returned empty DataFrame for sheet '{sheet_name}'.")
 
             except Exception as process_e:
                 print(f"Error processing sheet '{sheet_name}' with detected format '{file_type}': {process_e}")
                 traceback.print_exc()
-                return render_template('index.html', error=f"Error processing file data in '{file.filename}': {process_e}")
-
+                # Crucially, display the specific error to the user
+                return render_template('index.html', error=f"Error processing file '{file.filename}': {process_e}")
+        
         if not all_dfs_normalized:
-            # This is the error you are seeing.
-            return render_template('index.html', error="Could not find any sheets with valid and processable transaction data after attempting to read and process.")
+            # If after trying all sheets, none were valid
+            return render_template('index.html', error="Could not find any sheets with valid and processable transaction data.")
 
         # --- 3. Concatenate and Analyze ---
         df = pd.concat(all_dfs_normalized, ignore_index=True)
-        # Ensure Std_Date is datetime before sorting
-        df['Std_Date'] = pd.to_datetime(df['Std_Date'], errors='coerce')
-        df = df.dropna(subset=['Std_Date']) # Drop rows again if date conversion failed post-concat
         df = df.sort_values(by='Std_Date')
 
-
         if df.empty:
-            return render_template('index.html', error="No valid transaction data remained after final cleaning and date conversion.")
+            # This error should now be much harder to reach
+            return render_template('index.html', error="No valid transaction data found after cleaning across all sheets.")
 
         start_date = df['Std_Date'].min().strftime('%B %d, %Y')
         end_date = df['Std_Date'].max().strftime('%B %d, %Y')
 
-        # --- 4. Perform Analyses (NO CHANGES NEEDED BELOW THIS LINE) ---
-
+        # --- 4. Perform Analyses (Using Standardized Names - NO CHANGES NEEDED BELOW) ---
+        
         # Analysis 1: Payee & Category
         df['Category'] = df['Std_Description'].apply(categorize_transaction)
 
         # Analysis 2: Top 10 Spending
         top_10_spending = pd.DataFrame()
-        spending_df = df[(df['Std_Type'] == 'DEBIT') &
-                         (df['Std_Description'] != 'N/A') &
-                         (~df['Std_Description'].str.startswith('Transfer to', na=False))]
+        # Filter out generic transfer descriptions before grouping
+        spending_df = df[(df['Std_Type'] == 'DEBIT') & 
+                         (df['Std_Description'] != 'N/A') & 
+                         (~df['Std_Description'].str.startswith('Transfer to', na=False))] 
         if not spending_df.empty:
             top_10_spending = spending_df.groupby('Std_Description')['Std_Debit'].sum().nlargest(10).reset_index().rename(columns={'Std_Description': 'PayeeOrDetails', 'Std_Debit': 'Amount'})
 
         # Analysis 3: Monthly Summary
         monthly_summary = pd.DataFrame()
-        # Ensure Std_Date is datetime before using .dt accessor
-        df['Month'] = pd.to_datetime(df['Std_Date'], errors='coerce').dt.to_period('M')
+        df['Month'] = df['Std_Date'].dt.to_period('M')
         monthly_summary = df.groupby('Month')[['Std_Debit', 'Std_Credit']].sum().reset_index()
-        monthly_summary = monthly_summary.rename(columns={'Std_Debit': 'Debit', 'Std_Credit': 'Credit'})
+        monthly_summary = monthly_summary.rename(columns={'Std_Debit': 'Debit', 'Std_Credit': 'Credit'}) 
         if not monthly_summary.empty:
             monthly_summary['MonthStr'] = monthly_summary['Month'].astype(str)
 
@@ -399,8 +340,7 @@ def upload_file():
 
         # Analysis 5: Spending by Day of Week
         day_of_week_spending = pd.Series(dtype=float)
-        # Ensure Std_Date is datetime before using .dt accessor
-        df['Day of Week'] = pd.to_datetime(df['Std_Date'], errors='coerce').dt.day_name()
+        df['Day of Week'] = df['Std_Date'].dt.day_name()
         day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         day_of_week_spending = df[df['Std_Type'] == 'DEBIT'].groupby('Day of Week')['Std_Debit'].sum().reindex(day_order).fillna(0)
 
@@ -415,23 +355,16 @@ def upload_file():
             largest_debits = df[df['Std_Debit'] > 0].nlargest(5, 'Std_Debit')[['Std_Date', 'Std_Description', 'Std_Debit']]
             largest_debits_list = largest_debits.to_dict('records')
             for item in largest_debits_list:
-                # Check if Std_Date is valid before formatting
-                if pd.notna(item['Std_Date']):
-                    item['Date'] = item['Std_Date'].strftime('%b %d, %Y')
-                else:
-                    item['Date'] = 'Invalid Date'
+                item['Date'] = item['Std_Date'].strftime('%b %d, %Y')
                 item['PayeeOrDetails'] = item['Std_Description']
                 item['Debit'] = f"₹{item['Std_Debit']:,.2f}"
         if total_credit > 0:
             largest_credits = df[df['Std_Credit'] > 0].nlargest(5, 'Std_Credit')[['Std_Date', 'Std_Description', 'Std_Credit']]
             largest_credits_list = largest_credits.to_dict('records')
             for item in largest_credits_list:
-                 if pd.notna(item['Std_Date']):
-                    item['Date'] = item['Std_Date'].strftime('%b %d, %Y')
-                 else:
-                    item['Date'] = 'Invalid Date'
-                 item['PayeeOrDetails'] = item['Std_Description']
-                 item['Credit'] = f"₹{item['Std_Credit']:,.2f}"
+                item['Date'] = item['Std_Date'].strftime('%b %d, %Y')
+                item['PayeeOrDetails'] = item['Std_Description']
+                item['Credit'] = f"₹{item['Std_Credit']:,.2f}"
 
 
         # --- 5. Prepare Excel Summary ---
@@ -440,7 +373,7 @@ def upload_file():
         graph_paths = {}
 
         # --- 6. Generate Graphs ---
-        # (Graph generation code is unchanged)
+
         # Graph 1: Spending by Category Pie Chart
         category_pie_filename = 'category_spending_pie.png'
         category_pie_url = None
@@ -477,7 +410,7 @@ def upload_file():
         graph_filename = 'monthly_summary.png'
         graph_url = None
         graph_path = None
-        if not monthly_summary.empty:
+        if not monthly_summary.empty: 
             monthly_summary_melted_bar = monthly_summary.melt('MonthStr', var_name='Type', value_name='Amount', value_vars=['Debit', 'Credit'])
             plt.figure(figsize=(10, 6))
             ax = sns.barplot(data=monthly_summary_melted_bar, x='MonthStr', y='Amount', hue='Type', palette={'Debit': '#E74C3C', 'Credit': '#2ECC71'})
@@ -504,25 +437,22 @@ def upload_file():
         cum_graph_url = None
         cum_graph_path = None
         if not df.empty:
-            # Ensure Balance calculation is safe even with potential NaT in Std_Date if processing had issues
-            df_cb = df.dropna(subset=['Std_Date']).sort_values(by='Std_Date')
-            if not df_cb.empty:
-                 df_cb['Balance'] = df_cb['Std_Credit'].cumsum() - df_cb['Std_Debit'].cumsum()
-                 plt.figure(figsize=(10, 6))
-                 ax = sns.lineplot(data=df_cb, x='Std_Date', y='Balance', color='#00f2ea', linewidth=2.5)
-                 ax.set_title('Cumulative Balance Over Time', color='white', fontsize=16, pad=20)
-                 ax.tick_params(axis='x', colors='white', rotation=45)
-                 ax.tick_params(axis='y', colors='white')
-                 ax.set_xlabel('Date', color='white', fontsize=12)
-                 ax.set_ylabel('Balance (₹)', color='white', fontsize=12)
-                 ax.grid(True, linestyle='--', alpha=0.3, color='white')
-                 ax.set_facecolor('none')
-                 plt.tight_layout()
-                 cum_graph_path = os.path.join(app.config['STATIC_IMAGES_FOLDER'], cum_graph_filename)
-                 plt.savefig(cum_graph_path, transparent=True, bbox_inches='tight')
-                 cum_graph_url = f'images/{cum_graph_filename}'
-                 if os.path.exists(cum_graph_path): graph_paths['cumulative'] = cum_graph_path
-                 plt.close()
+            df['Balance'] = df['Std_Credit'].cumsum() - df['Std_Debit'].cumsum()
+            plt.figure(figsize=(10, 6))
+            ax = sns.lineplot(data=df, x='Std_Date', y='Balance', color='#00f2ea', linewidth=2.5)
+            ax.set_title('Cumulative Balance Over Time', color='white', fontsize=16, pad=20)
+            ax.tick_params(axis='x', colors='white', rotation=45)
+            ax.tick_params(axis='y', colors='white')
+            ax.set_xlabel('Date', color='white', fontsize=12)
+            ax.set_ylabel('Balance (₹)', color='white', fontsize=12)
+            ax.grid(True, linestyle='--', alpha=0.3, color='white')
+            ax.set_facecolor('none')
+            plt.tight_layout()
+            cum_graph_path = os.path.join(app.config['STATIC_IMAGES_FOLDER'], cum_graph_filename)
+            plt.savefig(cum_graph_path, transparent=True, bbox_inches='tight')
+            cum_graph_url = f'images/{cum_graph_filename}'
+            if os.path.exists(cum_graph_path): graph_paths['cumulative'] = cum_graph_path
+            plt.close()
 
         # Graph 4: Top 10 Spending
         top_10_graph_filename = 'top_10_spending.png'
@@ -594,8 +524,7 @@ def upload_file():
         trend_filename = 'income_expense_trend.png'
         trend_url = None
         trend_path = None
-        # Ensure monthly_summary exists and has data before plotting
-        if monthly_summary is not None and not monthly_summary.empty and 'Month' in monthly_summary.columns:
+        if not monthly_summary.empty:
             monthly_summary['MonthDate'] = monthly_summary['Month'].dt.to_timestamp()
             plt.figure(figsize=(10, 6))
             plt.plot(monthly_summary['MonthDate'], monthly_summary['Credit'], marker='o', linestyle='-', color='#2ECC71', linewidth=2.5, label='Income (Credit)')
@@ -618,8 +547,7 @@ def upload_file():
 
         # --- 7. Save Excel Summary WITH Images ---
         excel_write_successful = False
-        # Ensure monthly_summary exists before trying to write
-        if monthly_summary is not None and not monthly_summary.empty:
+        if not monthly_summary.empty:
             try:
                 with pd.ExcelWriter(summary_path, engine='xlsxwriter') as writer:
                     summary_df_to_write = monthly_summary[['MonthStr', 'Debit', 'Credit']].rename(columns={'MonthStr':'Month'})
@@ -649,16 +577,16 @@ def upload_file():
                                 insert_row += row_heights.get(key, 25) + 2
                             else:
                                 col_num += 1
-                excel_write_successful = True
+                excel_write_successful = True # Mark as successful
             except Exception as excel_error:
                 print(f"Error writing Excel file with images: {excel_error}")
-                # Fallback
+                # Fallback: Save Excel without images if embedding fails
                 try:
                     with pd.ExcelWriter(summary_path, engine='xlsxwriter') as writer:
                         summary_df_to_write = monthly_summary[['MonthStr', 'Debit', 'Credit']].rename(columns={'MonthStr':'Month'})
                         summary_df_to_write.to_excel(writer, index=False, sheet_name='Summary', startrow=0)
                     print("Saved Excel summary without images as fallback.")
-                    excel_write_successful = True
+                    excel_write_successful = True # Still successful, just without images
                 except Exception as fallback_excel_error:
                     print(f"Fallback Excel write also failed: {fallback_excel_error}")
 
@@ -683,8 +611,8 @@ def upload_file():
 
     except Exception as e:
         print(f"Error during analysis: {e}")
-        traceback.print_exc()
-        return render_template('index.html', error=f"An unexpected error occurred: {e}. Please ensure the file format is supported.")
+        traceback.print_exc() # Print full error trace
+        return render_template('index.html', error=f"An error occurred: {e}. Please ensure it's a valid transaction file.")
 
 
 @app.route('/download/<filename>')
@@ -699,6 +627,4 @@ def download_file(filename):
         return "Summary file not found.", 404
 
 if __name__ == '__main__':
-    # Use 0.0.0.0 to make it accessible on the network if needed
-    # debug=True automatically reloads on code changes
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)), debug=True)
+    app.run(debug=True)
