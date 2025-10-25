@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Analysis Result</title>
+</head>
+<body>
+    <h1>Analysis Result</h1>
+    <p>Total Debit: {{ total_debit }}</p>
+    <p>Total Credit: {{ total_credit }}</p>
+
+    <h2>Top 10 Spending</h2>
+    <ul>
+    {% for row in top_10_spending %}
+        <li>{{ row.PayeeOrDetails }}: {{ row.Amount }}</li>
+    {% endfor %}
+    </ul>
+
+    <h2>Monthly Summary</h2>
+    <ul>
+    {% for row in monthly_summary %}
+        <li>{{ row.MonthStr }} - Debit: {{ row.Debit }}, Credit: {{ row.Credit }}</li>
+    {% endfor %}
+    </ul>
+
+    <h2>Largest Debits</h2>
+    <ul>
+    {% for row in largest_debits %}
+        <li>{{ row.Std_Date }} - {{ row.Std_Description }}: {{ row.Std_Debit }}</li>
+    {% endfor %}
+    </ul>
+
+    <h2>Largest Credits</h2>
+    <ul>
+    {% for row in largest_credits %}
+        <li>{{ row.Std_Date }} - {{ row.Std_Description }}: {{ row.Std_Credit }}</li>
+    {% endfor %}
+    </ul>
+
+    <a href="/uploads/{{ summary_file }}">Download Excel Report</a>
+    <br>
+    <a href="/">Upload Another File</a>
+</body>
+</html>

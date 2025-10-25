@@ -295,12 +295,13 @@
             {% if not error %}
             <div class="upload-container">
                 <h2 style="text-align: center; font-size: 1.8em;">Upload Your Statement</h2>
-                <p style="text-align: center; color: var(--text-secondary); margin-top: -10px; margin-bottom: 25px;">Upload your Excel file (.xlsx or .xls) to generate your personal dashboard.</p>
+                <p style="text-align: center; color: var(--text-secondary); margin-top: -10px; margin-bottom: 25px;">Upload your file to generate your personal dashboard.</p>
 
                 <form class="upload-form" action="/upload" method="POST" enctype="multipart/form-data" onsubmit="showPreloader()">
                     
                     <p class="upload-note important">
-                        <span class="icon">&#128193;</span> We only accept <strong>Excel files (.xlsx or .xls)</strong>.
+                        <span class="icon">&#128193;</span> 
+                        We accept <strong>Excel (.xlsx, .xls) or CSV (.csv)</strong> files.
                     </p>
                     
                     <p class="upload-note important">
@@ -309,9 +310,9 @@
 
                     <label for="file-upload" class="custom-file-upload">
                         <span class="icon" style="font-size: 1.5em; display: block; margin-bottom: 10px;">&#128193;</span>
-                        <span id="file-name">Click to Choose Excel File</span>
+                        <span id="file-name">Click to Choose File (.xlsx, .xls, .csv)</span>
                     </label>
-                    <input id="file-upload" type="file" name="file" accept=".xlsx, .xls" required onchange="updateFileName(this)">
+                    <input id="file-upload" type="file" name="file" accept=".xlsx, .xls, .csv" required onchange="updateFileName(this)">
                     
                     <button type="submit" class="btn" style="margin-top: 25px; width: 100%;">Analyze Now</button>
                 </form>
@@ -413,11 +414,12 @@
                 document.getElementById('preloader-overlay').style.display='flex';
             } else {
                 event.preventDefault(); // Stop form submission
-                alert("Please choose an Excel file first.");
+                alert("Please choose a file first.");
             }
         }
         function updateFileName(input) {
-            const fileName = input.files[0] ? input.files[0].name : 'Click to Choose Excel File';
+            // UPDATED
+            const fileName = input.files[0] ? input.files[0].name : 'Click to Choose File (.xlsx, .xls, .csv)';
             const shortName = fileName.length > 30 ? fileName.substring(0, 27) + "..." : fileName;
             document.getElementById('file-name').textContent = shortName;
         }
